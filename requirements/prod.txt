@@ -1,0 +1,6 @@
+# requirements/prod.txt - Production dependencies
+-r base.txt
+
+# Production specific
+gunicorn==23.0.0
+python-multipart==0.0.9

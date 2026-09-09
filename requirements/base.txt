@@ -1,0 +1,41 @@
+# requirements/base.txt - Core dependencies
+# Core framework
+fastapi==0.115.0
+uvicorn[standard]==0.30.0
+pydantic==2.9.0
+pydantic-settings==2.4.0
+
+# LLM & Embeddings
+openai==1.43.0
+anthropic==0.28.0
+ollama==0.3.0
+sentence-transformers==3.0.1
+transformers==4.44.2
+torch==2.4.0
+
+# Vector Database
+chromadb==0.5.0
+# or for FAISS: faiss-cpu==1.8.0
+
+# Web Scraping
+requests==2.32.0
+beautifulsoup4==4.12.3
+lxml==5.3.0
+html2text==2024.2.26
+
+# Data Processing
+pandas==2.2.2
+numpy==1.26.4
+duckdb==1.0.0  # You already use this!
+python-multipart==0.0.9
+
+# Memory & Caching
+redis==5.0.1  # Optional, for production
+
+# Logging & Monitoring
+python-json-logger==2.0.7
+
+# Utilities
+python-dotenv==1.0.1
+tenacity==8.5.0
+tiktoken==0.7.0
