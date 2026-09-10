@@ -15,8 +15,13 @@ class CustomJsonFormatter(jsonlogger.JsonFormatter):
         super().add_fields(log_record, record, message_dict)
         log_record["app"] = settings.APP_NAME
         log_record["env"] = settings.APP_ENV
-        if not log_record.get("timestamp"):
-            log_record["timestamp"] = self.formatTime(record, self.datefmt)
+        log_record["level"] = record.levelname  # FIX: Explicitly set level
+        log_record["logger"] = record.name      # FIX: Rename 'name' to 'logger'
+        
+        log_record["timestamp"] = self.formatTime(record, self.datefmt)
+
+        if "name" in log_record:
+            del log_record["name"]
 
 def setup_logging(
     log_level: Optional[str] = None,
