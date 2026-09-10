@@ -65,8 +65,8 @@ class ChunkValidator:
     
     def __init__(
         self,
-        min_length: int = 200,
-        max_length: int = 3000,
+        min_length: int = 400,
+        max_length: int = 2500,
         min_code_length: int = 20,
     ):
         self.min_length = min_length
@@ -92,7 +92,8 @@ class ChunkValidator:
             else:
                 valid_chunks.append(chunk)
                 # Record fingerprint for dedup
-                seen_fingerprints.add(chunk.content[:200])
+                seen_fingerprints.add(chunk.content[:400].strip())
+                seen_fingerprints.add(chunk.content[:150].strip())
         
         # Compute statistics
         stats = self._compute_stats(valid_chunks)
@@ -144,6 +145,14 @@ class ChunkValidator:
         # Just a header with no content?
         if content_stripped.startswith("#") and len(content_stripped.split("\n")) < 2:
             issues.append("header_only")
+
+        # Use longer fingerprint for exact matches
+        long_fp = content_stripped[:400]
+        # Use short fingerprint for near-duplicates
+        short_fp = content_stripped[:150]
+        
+        if long_fp in seen_fingerprints or short_fp in seen_fingerprints:
+            issues.append("duplicate")
         
         # Too many URLs relative to content (navigation page)
         url_count = content_stripped.count("http")

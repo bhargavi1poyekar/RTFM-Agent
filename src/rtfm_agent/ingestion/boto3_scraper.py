@@ -424,104 +424,159 @@ class Boto3Scraper(BaseScraper):
         
         Strategy:
         1. Extract sections using hierarchy-aware parser
-        2. Merge small sections, split large ones
-        3. Preserve code blocks intact
+        2. Merge small sections, split large ones (respecting size limits strictly)
+        3. Filter out chunks that are too small
+        4. Deduplicate chunks within a page
         """
         if not content or len(content.strip()) < 50:
             return []
         
-        min_size = 300
-        max_size = 1500
+        # 👇 Stricter size limits
+        min_size = 400        # Was 300
+        max_size = 2000       # Was 1500 (allow slightly bigger for code)
+        target_size = 1200    # Preferred size
         
-        # Step 1: Extract hierarchical sections
+        # Step 1: Extract sections
         sections = self._extract_section_hierarchy(content)
         
-        # Step 2: Merge small sections into logical chunks
+        # Step 2: Build chunks by merging sections
         chunks = []
         buffer_content = ""
         buffer_header = ""
         buffer_code = []
         
+        def flush_buffer():
+            """Helper to flush the current buffer as a chunk."""
+            nonlocal buffer_content, buffer_header, buffer_code
+            if buffer_content and len(buffer_content.strip()) >= min_size:
+                chunks.append(self._create_chunk(
+                    buffer_content, metadata, buffer_header, buffer_code
+                ))
+            buffer_content = ""
+            buffer_code = []
+        
         for section in sections:
-            section_content = section["content"]
+            section_content = section["content"].strip()
             section_header = section["header"]
             
             if not section_content:
                 continue
             
-            # Extract code blocks from section
+            # Extract code blocks
             code_pattern = r'```(\w*)\n(.*?)```'
             code_matches = re.findall(code_pattern, section_content, re.DOTALL)
             section_code = [f"```{lang}\n{code}\n```" for lang, code in code_matches]
             
-            # Case 1: Section too large - flush buffer, then split section
+            # Case 1: Section too large - flush, then split
             if len(section_content) > max_size:
-                if buffer_content:
-                    chunks.append(self._create_chunk(
-                        buffer_content, metadata, buffer_header, buffer_code
-                    ))
-                    buffer_content = ""
-                    buffer_code = []
-                
-                # Split large section
-                sub_chunks = self._split_large_section(
-                    section_content, 
-                    max_size=max_size)
-                
+                flush_buffer()
+                sub_chunks = self._split_large_section(section_content, max_size)
                 for sub_content in sub_chunks:
+                    sub_content = sub_content.strip()
+                    if len(sub_content) < min_size:
+                        continue
                     sub_code = re.findall(code_pattern, sub_content, re.DOTALL)
                     sub_code_formatted = [f"```{lang}\n{code}\n```" for lang, code in sub_code]
-                    
-                    if len(sub_content) >= min_size:
-                        chunks.append(self._create_chunk(
-                            sub_content, metadata, section_header, sub_code_formatted
-                        ))
+                    chunks.append(self._create_chunk(
+                        sub_content, metadata, section_header, sub_code_formatted
+                    ))
             
-            # Case 2: Section is small - add to buffer
-            elif len(buffer_content) + len(section_content) <= max_size:
+            # Case 2: Fits in buffer (with header overhead ~50 chars)
+            elif len(buffer_content) + len(section_content) + 50 <= max_size:
                 if not buffer_content:
                     buffer_header = section_header
-                buffer_content += f"\n\n## {section_header}\n\n{section_content}"
+                else:
+                    buffer_content += f"\n\n## {section_header}\n\n"
+                buffer_content += section_content
                 buffer_code.extend(section_code)
             
-            # Case 3: Adding section would exceed max - flush and start new
+            # Case 3: Doesn't fit - flush buffer, start fresh
             else:
-                if buffer_content:
-                    chunks.append(self._create_chunk(
-                        buffer_content, metadata, buffer_header, buffer_code
-                    ))
-                
+                flush_buffer()
                 buffer_content = f"## {section_header}\n\n{section_content}"
                 buffer_header = section_header
                 buffer_code = section_code
         
-        # Flush remaining buffer
-        if buffer_content and len(buffer_content) >= min_size:
-            chunks.append(self._create_chunk(
-                buffer_content, metadata, buffer_header, buffer_code
-            ))
+        # Final flush
+        flush_buffer()
+        
+        # 👇 Deduplicate chunks
+        chunks = self._deduplicate_chunks(chunks)
         
         return chunks
+
+    def _deduplicate_chunks(
+        self, chunks: List[DocumentChunk]
+    ) -> List[DocumentChunk]:
+        """Remove duplicate chunks based on content fingerprint."""
+        seen = set()
+        unique = []
+        
+        for chunk in chunks:
+            # Use first 300 chars as fingerprint (more robust than 200)
+            fingerprint = chunk.content[:300].strip()
+            
+            # Also check for near-duplicates by using just the first 100 chars
+            # (handles cases where minor differences at end)
+            short_fp = chunk.content[:100].strip()
+            
+            if fingerprint in seen or short_fp in seen:
+                continue
+            
+            seen.add(fingerprint)
+            seen.add(short_fp)
+            unique.append(chunk)
+        
+        return unique
 
     def _split_large_section(
         self,
         content: str,
-        header: str = "",
-        max_size: int = 1500
+        max_size: int = 2000,
     ) -> List[str]:
-        """Split a large section into smaller chunks preserving structure."""
+        """
+        Split a large section into smaller chunks, strictly respecting max_size.
+        
+        Multi-level strategy:
+        1. Split by code blocks (preserve them)
+        2. Split by markdown headers
+        3. Split by double newlines (paragraphs)
+        4. Split by single newlines (lines)
+        5. Hard-split by character count (final fallback)
+        """
         if len(content) <= max_size:
             return [content]
         
+        # Strategy 1: Split by code blocks
+        code_pattern = r'(```[\w]*\s*\n.*?```)'
+        parts = re.split(code_pattern, content, flags=re.DOTALL)
+        
+        # Merge parts into size-respecting chunks
         chunks = []
-        
-        # Try to split by code blocks first (preserve them intact)
-        parts = re.split(r'(```[\w]*\s*\n.*?```)', content, flags=re.DOTALL)
-        
         current = ""
+        
         for part in parts:
-            if len(current) + len(part) > max_size and current:
-                chunks.append(current.strip())
+            # If part itself is too big, we need to split it first
+            if len(part) > max_size:
+                # Flush current
+                if current.strip():
+                    chunks.append(current.strip())
+                    current = ""
+                
+                # Split the oversized part
+                sub_parts = self._split_oversized_part(part, max_size)
+                # All but last go directly into chunks
+                for sp in sub_parts[:-1]:
+                    if sp.strip():
+                        chunks.append(sp.strip())
+                # Last one might fit with next parts
+                current = sub_parts[-1] if sub_parts else ""
+                continue
+            
+            # Normal case: try to add to current
+            if len(current) + len(part) > max_size:
+                if current.strip():
+                    chunks.append(current.strip())
                 current = part
             else:
                 current += part
@@ -529,27 +584,101 @@ class Boto3Scraper(BaseScraper):
         if current.strip():
             chunks.append(current.strip())
         
-        # If still too large, split by paragraphs
-        final_chunks = []
+        # FINAL SAFETY: Verify no chunk exceeds max_size
+        verified_chunks = []
         for chunk in chunks:
             if len(chunk) <= max_size:
-                final_chunks.append(chunk)
+                verified_chunks.append(chunk)
             else:
-                # Split by double newlines
-                paragraphs = chunk.split("\n\n")
-                current = ""
-                for para in paragraphs:
-                    if len(current) + len(para) > max_size and current:
-                        final_chunks.append(current.strip())
-                        current = para + "\n\n"
-                    else:
-                        current += para + "\n\n"
-                
-                if current.strip():
-                    final_chunks.append(current.strip())
+                # Emergency hard-split (should never happen with the above)
+                for i in range(0, len(chunk), max_size - 100):
+                    verified_chunks.append(chunk[i:i + max_size - 100])
         
-        return final_chunks
-    
+        return verified_chunks
+
+
+    def _split_oversized_part(self, text: str, max_size: int) -> List[str]:
+        """
+        Split a single oversized part into pieces under max_size.
+        Tries multiple splitting strategies from gentlest to most aggressive.
+        """
+        if len(text) <= max_size:
+            return [text]
+        
+        # Strategy A: Split by markdown headers
+        if "\n##" in text or "\n###" in text:
+            return self._split_by_pattern(text, r'\n(?=#{1,3}\s)', max_size)
+        
+        # Strategy B: Split by double newlines (paragraphs)
+        if "\n\n" in text:
+            return self._split_by_pattern(text, r'\n\n', max_size, keep_separator="\n\n")
+        
+        # Strategy C: Split by single newlines (lines)
+        if "\n" in text:
+            return self._split_by_pattern(text, r'\n', max_size, keep_separator="\n")
+        
+        # Strategy D: Split by sentences
+        if ". " in text:
+            parts = text.split(". ")
+            chunks = []
+            current = ""
+            for i, sent in enumerate(parts):
+                piece = sent + (". " if i < len(parts) - 1 else "")
+                if len(current) + len(piece) > max_size:
+                    if current.strip():
+                        chunks.append(current.strip())
+                    current = piece
+                else:
+                    current += piece
+            if current.strip():
+                chunks.append(current.strip())
+            return chunks
+        
+        # Strategy E: HARD CHARACTER SPLIT (last resort)
+        chunks = []
+        for i in range(0, len(text), max_size - 100):
+            chunks.append(text[i:i + max_size - 100])
+        return chunks
+
+
+    def _split_by_pattern(
+        self,
+        text: str,
+        pattern: str,
+        max_size: int,
+        keep_separator: str = "",
+    ) -> List[str]:
+        """
+        Generic splitter that respects max_size.
+        Splits by regex pattern, then merges pieces under max_size.
+        """
+        parts = re.split(pattern, text)
+        chunks = []
+        current = ""
+        
+        for i, part in enumerate(parts):
+            # For regex with capture group, re-add separator
+            piece = part
+            if keep_separator and i > 0:
+                piece = keep_separator + part
+            
+            if len(current) + len(piece) > max_size:
+                if current.strip():
+                    chunks.append(current.strip())
+                    current = piece
+                else:
+                    # Single piece too big - recursive split
+                    sub = self._split_oversized_part(piece, max_size)
+                    chunks.extend(sub[:-1])
+                    current = sub[-1] if sub else ""
+            else:
+                current += piece
+        
+        if current.strip():
+            chunks.append(current.strip())
+        
+        return chunks
+        
     def _create_chunk(
         self,
         content: str,
