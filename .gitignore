@@ -35,10 +35,12 @@ venv/
 *.swo
 *~
 
-# Data files
+# Data files (generated: rebuild with `python scripts/batch_scrape.py`)
 data/raw/*.html
+data/raw/*.json
 data/processed/*.json
 data/embeddings/*.db
+data/embeddings/chromadb/
 *.db
 *.sqlite3
 *.parquet

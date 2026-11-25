@@ -405,10 +405,10 @@ These are real findings from reading the code. Knowing your own project's weakne
     - `test_chunking.py`: size limits, merging, no text lost, min-size drop, code blocks recorded, deterministic IDs, plus **regression tests** for each bug fixed (heading overshoot, both infinite recursions, prefix dedup). Each was confirmed to fail on the old code.
     - `test_validator.py`: one parametrised test per rule, report numbers, `filter_valid` agrees with `validate`.
     - `test_api.py`: `/health`, `/`, `/docs` via FastAPI's `TestClient`.
-12. **Docker: no `.dockerignore`.** `COPY . .` copies `.env` (secrets), `venv/`, `.git/` and data into the image. Add a `.dockerignore` (at least `.env`, `venv/`, `.git/`, `data/`, `logs/`). The stage is named `builder` but there's no second stage, so it isn't really multi-stage yet.
+12. ✅ **`.dockerignore` added.** `COPY . .` used to copy `.env` (secrets), `venv/`, `.git/` and data into the image. Gotcha worth knowing: unlike `.gitignore`, a `.dockerignore` pattern such as `__pycache__` only matches at the project root, so nested folders need `**/__pycache__`. `data/embeddings/` is deliberately *not* excluded yet, because whether to ship a prebuilt vector index inside the image is a later decision. Still open: the stage is named `builder` but there's no second stage, so it isn't really multi-stage.
 13. CORS `allow_origins=["*"]` with `allow_credentials=True` is too permissive for production. Restrict to the frontend's domain.
 14. `pyproject.toml` says `readme = "README.md"` but the file is `Readme.md` (breaks on Linux, which is case-sensitive).
-15. The 4.4 MB `chunks.json` is tracked in git. Generated data usually belongs outside git (or in DVC / object storage); keep a small sample for tests instead.
+15. ✅ `chunks.json` is no longer tracked (the current one is 34 MB). Generated data belongs outside git; rebuild it with `python scripts/batch_scrape.py --max-pages 2300` (~20 min). `.gitignore` also covers the future ChromaDB index folder. The old 4 MB version still exists in git *history*; removing it from history would mean rewriting commits, which isn't worth it at this size.
 16. User-Agent still has a placeholder GitHub URL.
 
 ---
