@@ -1,5 +1,7 @@
 # How to Scrape 2,300 Docs Pages Without Getting Kicked Out
 
+![Cover: a friendly spider robot with reading glasses and a bow tie sits in a web connecting documentation pages, next to a coat-check ticket for code and a "speed limit 2 pages per second" sign](images/part2-cover.png)
+
 ### Part 2 of "Building RTFM": building a polite little web crawler, plus a coat-check trick for code
 
 ---
