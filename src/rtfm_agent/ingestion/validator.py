@@ -3,12 +3,13 @@
 Data quality validation for scraped chunks.
 Ensures chunks meet quality standards before embedding.
 """
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 from collections import Counter
 
 from src.rtfm_agent.ingestion.base import DocumentChunk
 from config.logging import logger
+from config.settings import settings
 
 
 @dataclass
@@ -65,13 +66,25 @@ class ChunkValidator:
     
     def __init__(
         self,
-        min_length: int = 400,
-        max_length: int = 2500,
+        min_length: Optional[int] = None,
+        max_length: Optional[int] = None,
         min_code_length: int = 20,
     ):
-        self.min_length = min_length
-        self.max_length = max_length
+        # Default to the same limits the chunker uses (config/settings.py)
+        self.min_length = min_length or settings.CHUNK_MIN_SIZE
+        self.max_length = max_length or settings.CHUNK_SIZE
         self.min_code_length = min_code_length
+
+    @staticmethod
+    def _fingerprints(content: str) -> Tuple[str]:
+        """
+        Fingerprint for duplicate detection: the whole (whitespace-normalised)
+        content. Prefix fingerprints are NOT safe here: Boto3 pages share
+        boilerplate openings (e.g. every service's "Waiters are available...")
+        followed by different content, so prefix matching discarded real data.
+        Used by both validate() and filter_valid().
+        """
+        return (" ".join(content.split()),)
     
     def validate(self, chunks: List[DocumentChunk]) -> ValidationReport:
         """Validate all chunks and generate a report."""
@@ -91,9 +104,8 @@ class ChunkValidator:
                     issues[issue] += 1
             else:
                 valid_chunks.append(chunk)
-                # Record fingerprint for dedup
-                seen_fingerprints.add(chunk.content[:400].strip())
-                seen_fingerprints.add(chunk.content[:150].strip())
+                # Record fingerprints for dedup
+                seen_fingerprints.update(self._fingerprints(chunk.content))
         
         # Compute statistics
         stats = self._compute_stats(valid_chunks)
@@ -146,24 +158,15 @@ class ChunkValidator:
         if content_stripped.startswith("#") and len(content_stripped.split("\n")) < 2:
             issues.append("header_only")
 
-        # Use longer fingerprint for exact matches
-        long_fp = content_stripped[:400]
-        # Use short fingerprint for near-duplicates
-        short_fp = content_stripped[:150]
-        
-        if long_fp in seen_fingerprints or short_fp in seen_fingerprints:
-            issues.append("duplicate")
-        
         # Too many URLs relative to content (navigation page)
         url_count = content_stripped.count("http")
         if url_count > 10 and url_count * 50 > content_len:
             issues.append("navigation_heavy")
-        
-        # 4. Duplicate detection
-        fingerprint = content_stripped[:200]
-        if fingerprint in seen_fingerprints:
+
+        # 4. Duplicate detection (exact or near-duplicate prefix)
+        if any(fp in seen_fingerprints for fp in self._fingerprints(chunk.content)):
             issues.append("duplicate")
-        
+
         # 5. Code block quality
         for code in chunk.code_blocks:
             if len(code) < self.min_code_length:
@@ -200,6 +203,6 @@ class ChunkValidator:
             issues = self._validate_chunk(chunk, seen_fingerprints)
             if not issues:
                 valid.append(chunk)
-                seen_fingerprints.add(chunk.content[:200])
+                seen_fingerprints.update(self._fingerprints(chunk.content))
         
         return valid

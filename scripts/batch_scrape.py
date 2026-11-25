@@ -47,7 +47,7 @@ def batch_scrape(
 
     
     # Scrape
-    chunks = scraper.scrape(max_pages=max_pages)
+    chunks = scraper.scrape(max_pages=max_pages, seed_urls=seeds)
 
     
     
@@ -59,10 +59,8 @@ def batch_scrape(
     # Validation
     if validate and chunks:
         logger.info("Running validation...")
-        validator = ChunkValidator(
-            min_length=200,
-            max_length=3000,
-        )
+        # Uses the same size limits as the chunker (config/settings.py)
+        validator = ChunkValidator()
         report = validator.validate(chunks)
         print("\n" + str(report))
     
@@ -71,7 +69,7 @@ def batch_scrape(
     Pages scraped: {len(scraper.visited_urls)}
     Chunks created: {len(chunks)}
     Time taken: {minutes}m {seconds}s
-    Rate: {len(scraper.visited_urls)/duration:.2f} pages/sec
+    Rate: {len(scraper.visited_urls) / max(duration, 1e-6):.2f} pages/sec
     Output: {scraper.output_dir}/chunks.json
     ========================================
     """)
