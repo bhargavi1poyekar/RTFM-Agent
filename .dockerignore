@@ -1,0 +1,39 @@
+# .dockerignore
+# Keeps secrets, local environments and bulky files out of the image.
+# Without this, `COPY . .` in the Dockerfile copies everything below.
+
+# Secrets: never bake into an image (pass env vars at runtime instead)
+.env
+.env.*
+
+# Local environments, VCS and tooling
+venv/
+.venv/
+env/
+.git/
+.github/
+.vscode/
+.idea/
+.pre-commit-config.yaml
+
+# Python / test caches and build artifacts
+# (unlike .gitignore, a bare pattern only matches at the root; **/ = any depth)
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+.mypy_cache/
+.coverage
+htmlcov/
+**/*.egg-info
+build/
+dist/
+
+# Not needed to run the app
+tests/
+docs/
+logs/
+
+# Scraped data (large, regenerable). data/embeddings/ is intentionally NOT
+# excluded: shipping a prebuilt vector index in the image is decided later.
+data/raw/
+data/processed/
