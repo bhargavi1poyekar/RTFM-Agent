@@ -13,6 +13,7 @@ from html2text import HTML2Text
 
 from src.rtfm_agent.ingestion.base import BaseScraper, DocumentChunk
 from config.logging import logger
+from config.settings import settings
 
 
 class Boto3Scraper(BaseScraper):
@@ -43,17 +44,24 @@ class Boto3Scraper(BaseScraper):
         output_dir: str = "data/raw",
         exclude_patterns: Optional[List[str]] = None,
         requests_per_second: float = 2.0,
+        min_chunk_size: Optional[int] = None,
+        max_chunk_size: Optional[int] = None,
     ):
         """
         Initialize Boto3 scraper.
-        
+
         Args:
             base_url: Root URL of Boto3 docs
             output_dir: Directory to store scraped content
             exclude_patterns: URL patterns to exclude
+            min_chunk_size: Drop chunks shorter than this (chars). Default: settings.
+            max_chunk_size: Hard cap on chunk length (chars). Default: settings.
         """
         super().__init__(base_url, output_dir, requests_per_second=requests_per_second,)
-        
+
+        self.min_chunk_size = min_chunk_size or settings.CHUNK_MIN_SIZE
+        self.max_chunk_size = max_chunk_size or settings.CHUNK_SIZE
+
         self.exclude_patterns = exclude_patterns or [
             "/search",
             "/_static",
@@ -69,6 +77,29 @@ class Boto3Scraper(BaseScraper):
             "User-Agent": "RTFM-Agent/1.0 (Documentation Scraper; +https://github.com/yourusername/rtfm-agent)"
         })
 
+        # Single-page cache so get_page_content() and get_links() on the same
+        # URL share one HTTP request. Stores raw bytes (not a parsed soup)
+        # because get_page_content() mutates its soup (removes <nav>), which
+        # would hide links from get_links().
+        self._cached_url: Optional[str] = None
+        self._cached_html: Optional[bytes] = None
+
+    def _fetch_html(self, url: str) -> bytes:
+        """
+        Download a page (rate-limited), reusing the last response if the
+        same URL is requested again. Raises requests.RequestException on failure.
+        """
+        if url == self._cached_url and self._cached_html is not None:
+            return self._cached_html
+
+        self._rate_limit()
+        response = self.session.get(url, timeout=30)
+        response.raise_for_status()
+
+        self._cached_url = url
+        self._cached_html = response.content
+        return response.content
+
     def get_all_seeds(self) -> List[str]:
         """
         Return list of seed URLs for complete coverage.
@@ -76,41 +107,75 @@ class Boto3Scraper(BaseScraper):
         """
         return [self.base_url] + self.REFERENCE_SEEDS
 
+    @property
+    def focus_services(self) -> set:
+        """Service names from REFERENCE_SEEDS, e.g. {"s3", "ec2", ...}."""
+        return {
+            seed.rsplit("/", 1)[1][: -len(".html")]
+            for seed in self.REFERENCE_SEEDS
+            if "/reference/services/" in seed
+        }
+
+    @staticmethod
+    def _service_of(url: str) -> Optional[str]:
+        """'.../reference/services/s3/client/put_object.html' -> 's3'."""
+        marker = "/reference/services/"
+        if marker not in url:
+            return None
+        rest = url.split(marker, 1)[1]
+        return rest.split("/", 1)[0].removesuffix(".html")
+
+    def _priority_tier(self, url: str) -> int:
+        """
+        Higher = scraped sooner.
+          5  focus service landing page   (reference/services/s3.html)
+          4  focus service client/resource page (s3/client/put_object.html)
+          3  focus service paginator/waiter page (boilerplate-heavy)
+          2  guide pages (tutorials)
+          1  reference index pages
+          0  everything else, incl. the ~400 non-focus services
+        """
+        service = self._service_of(url)
+        if service in self.focus_services:
+            if url.endswith(f"/services/{service}.html"):
+                return 5
+            if "/paginator/" in url or "/waiter/" in url:
+                return 3
+            return 4
+        if "/guide/" in url:
+            return 2
+        if "/reference/" in url and service is None:
+            return 1
+        return 0
+
     def prioritize_urls(self, urls: List[str]) -> List[str]:
         """
-        Sort URLs by priority so we scrape the most valuable pages first.
-        
-        Priority (highest to lowest):
-        1. Reference service pages (API methods) - TOP PRIORITY
-        2. Reference sub-pages (method details)
-        3. Guide pages (tutorials)
-        4. Everything else
+        Sort URLs so the most valuable pages are scraped first.
+
+        1. By tier (see _priority_tier): pages of the focus services first.
+        2. Within a tier, round-robin across services (S3, EC2, IAM, S3,
+           EC2, IAM, ...) so a big service like EC2 (1,000+ pages) can't
+           use up the whole page budget before smaller ones get a turn.
+        3. Otherwise keep discovery order (sort is stable).
         """
-        def priority_score(url: str) -> int:
-            if "/reference/services/" in url:
-                # Higher score for shorter paths (main service page)
-                depth = url.count("/")
-                return 1000 - depth
-            if "/reference/" in url:
-                return 800
-            if "/guide/" in url:
-                # Prefer shorter guide paths
-                depth = url.count("/")
-                return 500 - depth
-            return 100
-        
-        return sorted(urls, key=priority_score, reverse=True)
+        seen: Dict[Any, int] = {}  # (tier, service) -> URLs seen so far
+        keyed = []
+        for url in urls:
+            tier = self._priority_tier(url)
+            group = (tier, self._service_of(url))
+            turn = seen.get(group, 0)
+            seen[group] = turn + 1
+            keyed.append((-tier, turn, url))
+
+        keyed.sort(key=lambda k: (k[0], k[1]))
+        return [url for _, _, url in keyed]
         
     def get_page_content(self, url: str) -> Dict[str, Any]:
-        self._rate_limit()  
         """
         Fetch and parse Boto3 documentation page.
         """
         try:
-            response = self.session.get(url, timeout=30)
-            response.raise_for_status()
-            
-            soup = BeautifulSoup(response.content, "lxml")
+            soup = BeautifulSoup(self._fetch_html(url), "lxml")
             
             # Extract title
             title_elem = soup.find("title")
@@ -155,15 +220,11 @@ class Boto3Scraper(BaseScraper):
             return {}
     
     def get_links(self, url: str) -> List[str]:
-        self._rate_limit()  
         """
         Extract all internal documentation links from a Boto3 page.
         """
         try:
-            response = self.session.get(url, timeout=30)
-            response.raise_for_status()
-            
-            soup = BeautifulSoup(response.content, "lxml")
+            soup = BeautifulSoup(self._fetch_html(url), "lxml")
             
             links = []
             for anchor in soup.find_all("a", href=True):
@@ -193,7 +254,10 @@ class Boto3Scraper(BaseScraper):
                 if clean_url not in self.visited_urls:
                     links.append(clean_url)
             
-            return links[:100]  # Limit to 100 per page
+            # No cap: on service pages the first ~520 links are the sidebar
+            # (other services) and the page's own method links come after,
+            # so a cap like links[:100] made the crawler never go deeper.
+            return list(dict.fromkeys(links))  # dedupe, keep order
             
         except requests.RequestException as e:
             logger.error(f"Error getting links from {url}: {e}")
@@ -431,11 +495,10 @@ class Boto3Scraper(BaseScraper):
         if not content or len(content.strip()) < 50:
             return []
         
-        # 👇 Stricter size limits
-        min_size = 400        # Was 300
-        max_size = 2000       # Was 1500 (allow slightly bigger for code)
-        target_size = 1200    # Preferred size
-        
+        # Size limits come from settings (see CHUNK_SIZE comment there)
+        min_size = self.min_chunk_size
+        max_size = self.max_chunk_size
+
         # Step 1: Extract sections
         sections = self._extract_section_hierarchy(content)
         
@@ -467,8 +530,11 @@ class Boto3Scraper(BaseScraper):
             code_matches = re.findall(code_pattern, section_content, re.DOTALL)
             section_code = [f"```{lang}\n{code}\n```" for lang, code in code_matches]
             
-            # Case 1: Section too large - flush, then split
-            if len(section_content) > max_size:
+            # Exact text added when a section is prefixed with its heading
+            header_block = f"## {section_header}\n\n"
+
+            # Case 1: Section (with its heading) too large - flush, then split
+            if len(header_block) + len(section_content) > max_size:
                 flush_buffer()
                 sub_chunks = self._split_large_section(section_content, max_size)
                 for sub_content in sub_chunks:
@@ -481,19 +547,24 @@ class Boto3Scraper(BaseScraper):
                         sub_content, metadata, section_header, sub_code_formatted
                     ))
             
-            # Case 2: Fits in buffer (with header overhead ~50 chars)
-            elif len(buffer_content) + len(section_content) + 50 <= max_size:
+            # Case 2: Fits in buffer (measured with the real separator length)
+            # (an empty buffer always fits: Case 1 caught anything too big)
+            elif not buffer_content or (
+                len(buffer_content) + 2 + len(header_block) + len(section_content)
+                <= max_size
+            ):
                 if not buffer_content:
                     buffer_header = section_header
                 else:
-                    buffer_content += f"\n\n## {section_header}\n\n"
+                    buffer_content += f"\n\n{header_block}"
                 buffer_content += section_content
                 buffer_code.extend(section_code)
-            
+
             # Case 3: Doesn't fit - flush buffer, start fresh
+            # (fits: Case 1 already guarantees heading + content <= max_size)
             else:
                 flush_buffer()
-                buffer_content = f"## {section_header}\n\n{section_content}"
+                buffer_content = f"{header_block}{section_content}"
                 buffer_header = section_header
                 buffer_code = section_code
         
@@ -508,23 +579,20 @@ class Boto3Scraper(BaseScraper):
     def _deduplicate_chunks(
         self, chunks: List[DocumentChunk]
     ) -> List[DocumentChunk]:
-        """Remove duplicate chunks based on content fingerprint."""
+        """
+        Remove duplicate chunks (same whitespace-normalised content).
+        Full content, not a prefix: different sections often share the same
+        opening boilerplate, and prefix matching dropped real content.
+        """
         seen = set()
         unique = []
-        
+
         for chunk in chunks:
-            # Use first 300 chars as fingerprint (more robust than 200)
-            fingerprint = chunk.content[:300].strip()
-            
-            # Also check for near-duplicates by using just the first 100 chars
-            # (handles cases where minor differences at end)
-            short_fp = chunk.content[:100].strip()
-            
-            if fingerprint in seen or short_fp in seen:
+            fingerprint = " ".join(chunk.content.split())
+            if fingerprint in seen:
                 continue
-            
+
             seen.add(fingerprint)
-            seen.add(short_fp)
             unique.append(chunk)
         
         return unique
@@ -590,9 +658,9 @@ class Boto3Scraper(BaseScraper):
             if len(chunk) <= max_size:
                 verified_chunks.append(chunk)
             else:
-                # Emergency hard-split (should never happen with the above)
-                for i in range(0, len(chunk), max_size - 100):
-                    verified_chunks.append(chunk[i:i + max_size - 100])
+                # Emergency hard-split (e.g. a single sentence > max_size)
+                for i in range(0, len(chunk), max_size):
+                    verified_chunks.append(chunk[i:i + max_size])
         
         return verified_chunks
 
@@ -606,7 +674,9 @@ class Boto3Scraper(BaseScraper):
             return [text]
         
         # Strategy A: Split by markdown headers
-        if "\n##" in text or "\n###" in text:
+        # (check with the same regex we split on; a looser check such as
+        # "\n##" in text would match "\n##x", split nothing, and recurse forever)
+        if re.search(r'\n(?=#{1,3}\s)', text):
             return self._split_by_pattern(text, r'\n(?=#{1,3}\s)', max_size)
         
         # Strategy B: Split by double newlines (paragraphs)
@@ -636,8 +706,8 @@ class Boto3Scraper(BaseScraper):
         
         # Strategy E: HARD CHARACTER SPLIT (last resort)
         chunks = []
-        for i in range(0, len(text), max_size - 100):
-            chunks.append(text[i:i + max_size - 100])
+        for i in range(0, len(text), max_size):
+            chunks.append(text[i:i + max_size])
         return chunks
 
 
@@ -665,10 +735,12 @@ class Boto3Scraper(BaseScraper):
             if len(current) + len(piece) > max_size:
                 if current.strip():
                     chunks.append(current.strip())
-                    current = piece
-                else:
-                    # Single piece too big - recursive split
-                    sub = self._split_oversized_part(piece, max_size)
+                current = piece
+                if len(piece) > max_size:
+                    # Single piece too big - recurse with a finer strategy.
+                    # strip() removes the re-added separator; otherwise the
+                    # piece would be split on that same separator forever.
+                    sub = self._split_oversized_part(piece.strip(), max_size)
                     chunks.extend(sub[:-1])
                     current = sub[-1] if sub else ""
             else:

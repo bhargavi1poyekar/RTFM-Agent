@@ -48,8 +48,12 @@ class Settings(BaseSettings):
     RETRIEVAL_TOP_K: int = 5
     RETRIEVAL_SCORE_THRESHOLD: float = 0.7
     
-    # Chunking
-    CHUNK_SIZE: int = 1000
+    # Chunking (sizes in characters)
+    # all-MiniLM-L6-v2 truncates input at 256 tokens. Boto3 docs measure
+    # ~3.2 chars/token (2.8 for code-dense text), so 700 chars keeps chunks
+    # under the limit; bigger chunks get their tail silently ignored.
+    CHUNK_SIZE: int = 700          # max chars per chunk
+    CHUNK_MIN_SIZE: int = 150      # smaller chunks are dropped as fragments
     CHUNK_OVERLAP: int = 100
     
     # Memory
