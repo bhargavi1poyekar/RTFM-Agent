@@ -3,11 +3,12 @@
 Data quality validation for scraped chunks.
 Ensures chunks meet quality standards before embedding.
 """
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Callable, List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 from collections import Counter
 
 from src.rtfm_agent.ingestion.base import DocumentChunk
+from src.rtfm_agent.ingestion.tokens import count_tokens
 from config.logging import logger
 from config.settings import settings
 
@@ -69,11 +70,13 @@ class ChunkValidator:
         min_length: Optional[int] = None,
         max_length: Optional[int] = None,
         min_code_length: int = 20,
+        length_fn: Optional[Callable[[str], int]] = None,
     ):
-        # Default to the same limits the chunker uses (config/settings.py)
-        self.min_length = min_length or settings.CHUNK_MIN_SIZE
-        self.max_length = max_length or settings.CHUNK_SIZE
+        # Default to the same limits and unit (tokens) the chunker uses
+        self.min_length = min_length or settings.CHUNK_MIN_TOKENS
+        self.max_length = max_length or settings.CHUNK_MAX_TOKENS
         self.min_code_length = min_code_length
+        self._size = length_fn or count_tokens
 
     @staticmethod
     def _fingerprints(content: str) -> Tuple[str]:
@@ -129,14 +132,15 @@ class ChunkValidator:
         """Validate a single chunk. Returns list of issues."""
         issues = []
         
-        # 1. Content length
-        content_len = len(chunk.content)
-        
+        # 1. Content size (in the chunker's unit: tokens by default)
+        content_len = len(chunk.content)  # chars, for the URL-density check
+        size = self._size(chunk.content) if content_len else 0
+
         if content_len == 0:
             issues.append("empty_content")
-        elif content_len < self.min_length:
+        elif size < self.min_length:
             issues.append("too_short")
-        elif content_len > self.max_length:
+        elif size > self.max_length:
             issues.append("too_long")
         
         # 2. Required metadata

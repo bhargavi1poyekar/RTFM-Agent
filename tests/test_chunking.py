@@ -16,13 +16,14 @@ def scraper(tmp_path) -> Boto3Scraper:
     return Boto3Scraper(output_dir=str(tmp_path))
 
 
-def sizes(chunks):
-    return [len(c.content) for c in chunks]
+def sizes(chunks, scraper: Boto3Scraper):
+    """Chunk sizes in the scraper's own unit (tokens by default)."""
+    return [scraper._size(c.content) for c in chunks]
 
 
 def test_defaults_come_from_settings(scraper: Boto3Scraper) -> None:
-    assert scraper.max_chunk_size == settings.CHUNK_SIZE
-    assert scraper.min_chunk_size == settings.CHUNK_MIN_SIZE
+    assert scraper.max_chunk_size == settings.CHUNK_MAX_TOKENS
+    assert scraper.min_chunk_size == settings.CHUNK_MIN_TOKENS
 
 
 def test_empty_or_tiny_content_gives_no_chunks(scraper: Boto3Scraper) -> None:
@@ -42,7 +43,7 @@ def test_small_sections_are_merged(scraper: Boto3Scraper) -> None:
 
 def test_heading_does_not_push_chunk_over_max(tmp_path) -> None:
     """Regression: the '## heading' used to be added after the size check."""
-    s = Boto3Scraper(output_dir=str(tmp_path), min_chunk_size=10, max_chunk_size=300)
+    s = Boto3Scraper(output_dir=str(tmp_path), min_chunk_size=10, max_chunk_size=300, length_fn=len)
     long_header = "H" * 60
     first = "## First\n\n" + "x " * 100
     # Section body alone fits in 300, but body + "## <long header>\n\n" does not
@@ -51,7 +52,7 @@ def test_heading_does_not_push_chunk_over_max(tmp_path) -> None:
     chunks = s.chunk_content(first + "\n\n" + second, META)
 
     assert chunks
-    assert max(sizes(chunks)) <= 300
+    assert max(sizes(chunks, s)) <= 300
 
 
 @pytest.mark.parametrize(
@@ -61,18 +62,23 @@ def test_heading_does_not_push_chunk_over_max(tmp_path) -> None:
         "## Intro\n\n```python\nimport boto3\n```\n\n" + "word " * 2000,
         # "\n##x" is not a heading but used to trigger header splitting forever
         "## Intro\n\n" + ("token " * 300 + "\n##notaheading ") * 5,
-        # One huge line with no newlines or sentences -> hard split
-        "## Intro\n\n" + "a" * 5000,
+        # One huge line with no spaces, newlines or sentences -> hard split.
+        # (Not "a" * 5000: the tokenizer maps any 100+ char word to a single
+        # [UNK] token, so that would be tiny when measured in tokens.)
+        "## Intro\n\n" + "ab," * 2000,
     ],
     ids=["giant-paragraph", "fake-heading", "no-boundaries"],
 )
 def test_oversized_text_terminates_and_respects_max(
-    scraper: Boto3Scraper, text: str
+    scraper: Boto3Scraper, text: str, tmp_path
 ) -> None:
-    chunks = scraper.chunk_content(text, META)
+    # Must terminate whether size is measured in tokens or characters
+    for s in (scraper, Boto3Scraper(output_dir=str(tmp_path), length_fn=len,
+                                    min_chunk_size=150, max_chunk_size=700)):
+        chunks = s.chunk_content(text, META)
 
-    assert chunks
-    assert max(sizes(chunks)) <= scraper.max_chunk_size
+        assert chunks
+        assert max(sizes(chunks, s)) <= s.max_chunk_size
 
 
 def test_no_text_lost_when_splitting_paragraphs(scraper: Boto3Scraper) -> None:
@@ -87,7 +93,7 @@ def test_no_text_lost_when_splitting_paragraphs(scraper: Boto3Scraper) -> None:
 
 
 def test_chunks_below_min_size_are_dropped(tmp_path) -> None:
-    s = Boto3Scraper(output_dir=str(tmp_path), min_chunk_size=200, max_chunk_size=700)
+    s = Boto3Scraper(output_dir=str(tmp_path), min_chunk_size=200, max_chunk_size=700, length_fn=len)
     text = "## Tiny\n\n" + "z " * 40  # ~90 chars
 
     assert s.chunk_content(text + "\n" * 5 + "padding " * 3, META) == []
@@ -105,7 +111,7 @@ def test_code_blocks_recorded_on_chunk(scraper: Boto3Scraper) -> None:
 
 
 def test_duplicate_chunks_within_page_removed(tmp_path) -> None:
-    s = Boto3Scraper(output_dir=str(tmp_path), min_chunk_size=50, max_chunk_size=500)
+    s = Boto3Scraper(output_dir=str(tmp_path), min_chunk_size=50, max_chunk_size=500, length_fn=len)
     body = "same content repeated " * 20
     text = f"## One\n\n{body}\n\n## Two\n\n" + "different " * 70 + f"\n\n## One\n\n{body}"
 
@@ -118,7 +124,7 @@ def test_duplicate_chunks_within_page_removed(tmp_path) -> None:
 
 def test_shared_prefix_chunks_both_kept(tmp_path) -> None:
     """Regression: dedup used a 100-char prefix and dropped different content."""
-    s = Boto3Scraper(output_dir=str(tmp_path), min_chunk_size=50, max_chunk_size=400)
+    s = Boto3Scraper(output_dir=str(tmp_path), min_chunk_size=50, max_chunk_size=400, length_fn=len)
     intro = "Waiters are available on a client instance via the get_waiter method. " * 2
     text = f"## A\n\n{intro}BucketExists\n\n" + "x " * 200 + f"\n\n## B\n\n{intro}InstanceRunning"
 

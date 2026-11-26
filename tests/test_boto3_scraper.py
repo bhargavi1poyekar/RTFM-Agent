@@ -5,6 +5,7 @@ No real HTTP: a fake session returns hand-written HTML, so tests are fast,
 deterministic and don't hit AWS servers.
 """
 import importlib.util
+import json
 from pathlib import Path
 from typing import Dict, List
 from unittest.mock import MagicMock
@@ -14,6 +15,7 @@ import pytest
 from config.settings import settings
 from src.rtfm_agent.ingestion.base import BaseScraper
 from src.rtfm_agent.ingestion.boto3_scraper import Boto3Scraper
+from src.rtfm_agent.ingestion.tokens import count_tokens
 
 BASE = "https://boto3.amazonaws.com/v1/documentation/api/latest"
 PAGE_A = f"{BASE}/reference/services/sqs.html"
@@ -73,6 +75,14 @@ def test_each_page_is_downloaded_once(scraper: Boto3Scraper) -> None:
     assert scraper.session.calls == [PAGE_A, PAGE_B]
 
 
+def test_scrape_saves_cleaned_pages_for_rechunking(scraper: Boto3Scraper) -> None:
+    scraper.scrape(max_pages=2, seed_urls=[PAGE_A])
+
+    saved = json.loads((scraper.output_dir / "pages.json").read_text(encoding="utf-8"))
+    assert [p["url"] for p in saved] == [PAGE_A, PAGE_B]
+    assert all(p["content"] and "scraped_at" in p for p in saved)
+
+
 def test_links_found_even_though_nav_is_stripped(scraper: Boto3Scraper) -> None:
     scraper.get_page_content(PAGE_A)  # strips <nav> from its own parsed copy
 
@@ -91,7 +101,7 @@ def test_chunks_respect_max_size(scraper: Boto3Scraper) -> None:
     chunks = scraper.chunk_content("\n\n".join(sections), {"url": PAGE_A, "title": "t"})
 
     assert chunks
-    assert all(len(c.content) <= settings.CHUNK_SIZE for c in chunks)
+    assert all(count_tokens(c.content) <= settings.CHUNK_MAX_TOKENS for c in chunks)
 
 
 def test_base_scraper_default_prioritize_keeps_order() -> None:

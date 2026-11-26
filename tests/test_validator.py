@@ -34,8 +34,8 @@ def issues_for(chunk: DocumentChunk, validator: ChunkValidator = None) -> List[s
 
 def test_defaults_match_chunker_settings() -> None:
     v = ChunkValidator()
-    assert v.min_length == settings.CHUNK_MIN_SIZE
-    assert v.max_length == settings.CHUNK_SIZE
+    assert v.min_length == settings.CHUNK_MIN_TOKENS
+    assert v.max_length == settings.CHUNK_MAX_TOKENS
 
 
 def test_good_chunk_has_no_issues() -> None:
@@ -47,7 +47,7 @@ def test_good_chunk_has_no_issues() -> None:
     [
         (make_chunk(content=""), "empty_content"),
         (make_chunk(content="short"), "too_short"),
-        (make_chunk(content="x" * (settings.CHUNK_SIZE + 1)), "too_long"),
+        (make_chunk(content="word " * (settings.CHUNK_MAX_TOKENS + 1)), "too_long"),
         (make_chunk(source_url=""), "missing_source_url"),
         (make_chunk(title=""), "missing_title"),
         (make_chunk(section=""), "missing_section"),

@@ -2,7 +2,7 @@
 """
 Boto3 documentation scraper implementation.
 """
-from typing import List, Dict, Any, Optional
+from typing import Callable, List, Dict, Any, Optional
 from urllib.parse import urljoin, urlparse
 import re
 
@@ -11,6 +11,7 @@ from bs4 import BeautifulSoup
 from html2text import HTML2Text
 
 from src.rtfm_agent.ingestion.base import BaseScraper, DocumentChunk, make_chunk_id
+from src.rtfm_agent.ingestion.tokens import count_tokens
 from config.logging import logger
 from config.settings import settings
 
@@ -45,6 +46,7 @@ class Boto3Scraper(BaseScraper):
         requests_per_second: float = 2.0,
         min_chunk_size: Optional[int] = None,
         max_chunk_size: Optional[int] = None,
+        length_fn: Optional[Callable[[str], int]] = None,
     ):
         """
         Initialize Boto3 scraper.
@@ -53,13 +55,16 @@ class Boto3Scraper(BaseScraper):
             base_url: Root URL of Boto3 docs
             output_dir: Directory to store scraped content
             exclude_patterns: URL patterns to exclude
-            min_chunk_size: Drop chunks shorter than this (chars). Default: settings.
-            max_chunk_size: Hard cap on chunk length (chars). Default: settings.
+            min_chunk_size: Drop chunks smaller than this. Default: settings.
+            max_chunk_size: Hard cap on chunk size. Default: settings.
+            length_fn: How chunk size is measured. Default: embedding-model
+                tokens (count_tokens). Tests may pass `len` to work in chars.
         """
         super().__init__(base_url, output_dir, requests_per_second=requests_per_second,)
 
-        self.min_chunk_size = min_chunk_size or settings.CHUNK_MIN_SIZE
-        self.max_chunk_size = max_chunk_size or settings.CHUNK_SIZE
+        self.min_chunk_size = min_chunk_size or settings.CHUNK_MIN_TOKENS
+        self.max_chunk_size = max_chunk_size or settings.CHUNK_MAX_TOKENS
+        self._size = length_fn or count_tokens
 
         self.exclude_patterns = exclude_patterns or [
             "/search",
@@ -494,7 +499,7 @@ class Boto3Scraper(BaseScraper):
         if not content or len(content.strip()) < 50:
             return []
         
-        # Size limits come from settings (see CHUNK_SIZE comment there)
+        # Size limits come from settings (see CHUNK_MAX_TOKENS comment there)
         min_size = self.min_chunk_size
         max_size = self.max_chunk_size
 
@@ -510,7 +515,7 @@ class Boto3Scraper(BaseScraper):
         def flush_buffer():
             """Helper to flush the current buffer as a chunk."""
             nonlocal buffer_content, buffer_header, buffer_code
-            if buffer_content and len(buffer_content.strip()) >= min_size:
+            if buffer_content and self._size(buffer_content.strip()) >= min_size:
                 chunks.append(self._create_chunk(
                     buffer_content, metadata, buffer_header, buffer_code
                 ))
@@ -533,12 +538,12 @@ class Boto3Scraper(BaseScraper):
             header_block = f"## {section_header}\n\n"
 
             # Case 1: Section (with its heading) too large - flush, then split
-            if len(header_block) + len(section_content) > max_size:
+            if self._size(header_block + section_content) > max_size:
                 flush_buffer()
                 sub_chunks = self._split_large_section(section_content, max_size)
                 for sub_content in sub_chunks:
                     sub_content = sub_content.strip()
-                    if len(sub_content) < min_size:
+                    if self._size(sub_content) < min_size:
                         continue
                     sub_code = re.findall(code_pattern, sub_content, re.DOTALL)
                     sub_code_formatted = [f"```{lang}\n{code}\n```" for lang, code in sub_code]
@@ -546,10 +551,10 @@ class Boto3Scraper(BaseScraper):
                         sub_content, metadata, section_header, sub_code_formatted
                     ))
             
-            # Case 2: Fits in buffer (measured with the real separator length)
+            # Case 2: Fits in buffer (measured on the exact merged text)
             # (an empty buffer always fits: Case 1 caught anything too big)
             elif not buffer_content or (
-                len(buffer_content) + 2 + len(header_block) + len(section_content)
+                self._size(f"{buffer_content}\n\n{header_block}{section_content}")
                 <= max_size
             ):
                 if not buffer_content:
@@ -609,9 +614,9 @@ class Boto3Scraper(BaseScraper):
         2. Split by markdown headers
         3. Split by double newlines (paragraphs)
         4. Split by single newlines (lines)
-        5. Hard-split by character count (final fallback)
+        5. Hard-split by size (final fallback)
         """
-        if len(content) <= max_size:
+        if self._size(content) <= max_size:
             return [content]
         
         # Strategy 1: Split by code blocks
@@ -624,7 +629,7 @@ class Boto3Scraper(BaseScraper):
         
         for part in parts:
             # If part itself is too big, we need to split it first
-            if len(part) > max_size:
+            if self._size(part) > max_size:
                 # Flush current
                 if current.strip():
                     chunks.append(current.strip())
@@ -641,7 +646,7 @@ class Boto3Scraper(BaseScraper):
                 continue
             
             # Normal case: try to add to current
-            if len(current) + len(part) > max_size:
+            if self._size(current + part) > max_size:
                 if current.strip():
                     chunks.append(current.strip())
                 current = part
@@ -654,14 +659,39 @@ class Boto3Scraper(BaseScraper):
         # FINAL SAFETY: Verify no chunk exceeds max_size
         verified_chunks = []
         for chunk in chunks:
-            if len(chunk) <= max_size:
+            if self._size(chunk) <= max_size:
                 verified_chunks.append(chunk)
             else:
                 # Emergency hard-split (e.g. a single sentence > max_size)
-                for i in range(0, len(chunk), max_size):
-                    verified_chunks.append(chunk[i:i + max_size])
-        
+                verified_chunks.extend(self._hard_split(chunk, max_size))
+
         return verified_chunks
+
+    def _hard_split(self, text: str, max_size: int) -> List[str]:
+        """
+        Last resort: cut `text` into the longest prefixes that fit max_size,
+        found by binary search so it works for any size measure (tokens or
+        chars). Prefers cutting at a space near the end of each piece.
+        """
+        pieces = []
+        rest = text
+        while rest:
+            if self._size(rest) <= max_size:
+                pieces.append(rest)
+                break
+            lo, hi = 1, len(rest)  # largest n with size(rest[:n]) <= max_size
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                if self._size(rest[:mid]) <= max_size:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            cut = rest.rfind(" ", int(lo * 0.8), lo)
+            if cut <= 0:
+                cut = lo
+            pieces.append(rest[:cut])
+            rest = rest[cut:]
+        return pieces
 
 
     def _split_oversized_part(self, text: str, max_size: int) -> List[str]:
@@ -669,9 +699,9 @@ class Boto3Scraper(BaseScraper):
         Split a single oversized part into pieces under max_size.
         Tries multiple splitting strategies from gentlest to most aggressive.
         """
-        if len(text) <= max_size:
+        if self._size(text) <= max_size:
             return [text]
-        
+
         # Strategy A: Split by markdown headers
         # (check with the same regex we split on; a looser check such as
         # "\n##" in text would match "\n##x", split nothing, and recurse forever)
@@ -693,7 +723,7 @@ class Boto3Scraper(BaseScraper):
             current = ""
             for i, sent in enumerate(parts):
                 piece = sent + (". " if i < len(parts) - 1 else "")
-                if len(current) + len(piece) > max_size:
+                if self._size(current + piece) > max_size:
                     if current.strip():
                         chunks.append(current.strip())
                     current = piece
@@ -702,12 +732,9 @@ class Boto3Scraper(BaseScraper):
             if current.strip():
                 chunks.append(current.strip())
             return chunks
-        
-        # Strategy E: HARD CHARACTER SPLIT (last resort)
-        chunks = []
-        for i in range(0, len(text), max_size):
-            chunks.append(text[i:i + max_size])
-        return chunks
+
+        # Strategy E: HARD SPLIT (last resort)
+        return self._hard_split(text, max_size)
 
 
     def _split_by_pattern(
@@ -731,11 +758,11 @@ class Boto3Scraper(BaseScraper):
             if keep_separator and i > 0:
                 piece = keep_separator + part
             
-            if len(current) + len(piece) > max_size:
+            if self._size(current + piece) > max_size:
                 if current.strip():
                     chunks.append(current.strip())
                 current = piece
-                if len(piece) > max_size:
+                if self._size(piece) > max_size:
                     # Single piece too big - recurse with a finer strategy.
                     # strip() removes the re-added separator; otherwise the
                     # piece would be split on that same separator forever.

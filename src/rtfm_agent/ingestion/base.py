@@ -79,6 +79,9 @@ class BaseScraper(ABC):
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.visited_urls = set()
         self.chunks: List[DocumentChunk] = []
+        # Cleaned page text, saved next to chunks.json so chunking can be
+        # re-run (rechunk_pages) without crawling the site again.
+        self.pages: List[Dict[str, Any]] = []
 
         # Rate limiting
         self.requests_per_second = requests_per_second
@@ -217,18 +220,15 @@ class BaseScraper(ABC):
                     urls_to_visit = self.prioritize_urls(urls_to_visit)
                 
                 # Chunk
-                metadata = {
+                page = {
                     "url": current_url,
                     "title": page_data.get("title", ""),
+                    "content": page_data.get("content", ""),
                     "scraped_at": datetime.now().isoformat(),
-                    "chunk_size": len(page_data.get("content", "")),
                 }
-                
-                page_chunks = self.chunk_content(
-                    page_data.get("content", ""),
-                    metadata
-                )
-                
+                self.pages.append(page)
+                page_chunks = self._chunk_page(page)
+
                 self.chunks.extend(page_chunks)
                 self.visited_urls.add(current_url)
                 
@@ -243,9 +243,44 @@ class BaseScraper(ABC):
                 continue
         
         logger.info(f"Scraping complete. Total chunks: {len(self.chunks)}")
+        self._save_pages()
         self._save_chunks()
         return self.chunks
-    
+
+    def _chunk_page(self, page: Dict[str, Any]) -> List[DocumentChunk]:
+        """Chunk one saved page record (shared by scrape and rechunk_pages)."""
+        metadata = {
+            "url": page["url"],
+            "title": page.get("title", ""),
+            "scraped_at": page.get("scraped_at", ""),
+            "chunk_size": len(page.get("content", "")),
+        }
+        return self.chunk_content(page.get("content", ""), metadata)
+
+    def rechunk_pages(self, pages_file: Optional[str] = None) -> List[DocumentChunk]:
+        """
+        Re-chunk previously scraped pages (pages.json) with the current
+        chunking settings and overwrite chunks.json. No network access.
+        """
+        path = Path(pages_file) if pages_file else self.output_dir / "pages.json"
+        with open(path, "r", encoding="utf-8") as f:
+            self.pages = json.load(f)
+
+        self.chunks = []
+        for page in self.pages:
+            self.chunks.extend(self._chunk_page(page))
+
+        logger.info(f"Re-chunked {len(self.pages)} pages into {len(self.chunks)} chunks")
+        self._save_chunks()
+        return self.chunks
+
+    def _save_pages(self) -> None:
+        """Save cleaned page text to pages.json."""
+        output_file = self.output_dir / "pages.json"
+        with open(output_file, "w", encoding="utf-8") as f:
+            json.dump(self.pages, f, ensure_ascii=False)
+        logger.info(f"Saved {len(self.pages)} pages to {output_file}")
+
     def _save_chunks(self) -> None:
         """Save chunks to JSON file."""
         output_file = self.output_dir / "chunks.json"

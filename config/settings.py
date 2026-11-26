@@ -48,12 +48,14 @@ class Settings(BaseSettings):
     RETRIEVAL_TOP_K: int = 5
     RETRIEVAL_SCORE_THRESHOLD: float = 0.7
     
-    # Chunking (sizes in characters)
-    # all-MiniLM-L6-v2 truncates input at 256 tokens. Boto3 docs measure
-    # ~3.2 chars/token (2.8 for code-dense text), so 700 chars keeps chunks
-    # under the limit; bigger chunks get their tail silently ignored.
-    CHUNK_SIZE: int = 700          # max chars per chunk
-    CHUNK_MIN_SIZE: int = 150      # smaller chunks are dropped as fragments
+    # Chunking (sizes in tokens, counted with the embedding model's tokenizer)
+    # all-MiniLM-L6-v2 reads 256 tokens per input, 2 of which are [CLS] and
+    # [SEP], leaving 254. Each chunk is embedded with a breadcrumb like
+    # "s3 > client > put_object" (longest seen: 23 tokens), so chunk text
+    # gets 254 - 24 = 230. Characters are not used: chars/token ranges from
+    # ~3.7 (prose) down to ~1.3 (EC2 instance-type lists).
+    CHUNK_MAX_TOKENS: int = 230    # max tokens per chunk
+    CHUNK_MIN_TOKENS: int = 40     # smaller chunks are dropped as fragments
     CHUNK_OVERLAP: int = 100
     
     # Memory
