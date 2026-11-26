@@ -1,5 +1,7 @@
 # Chunky Business: I Was Silently Throwing Away Half My Data
 
+![Cover: the RTFM robot measures a long documentation page with a ruler marked "256 tokens"; the bottom of the page is stamped "NOT READ", next to neat, checked-off bite-sized chunks](images/part3-cover.png)
+
 ### Part 3 of "Building RTFM": cutting documents into pieces, and why you should measure instead of guess
 
 ---
