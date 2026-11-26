@@ -1,5 +1,7 @@
 # Zero Errors, Totally Wrong Data
 
+![Cover: a terminal shows all-green results (500 pages scraped, 0 errors, 94% chunks passed) while the surprised RTFM robot spots a chart under a magnifying glass: 445 landing pages, but only 1 page each for S3, EC2 and IAM](images/part4-cover.png)
+
 ### Part 4 of "Building RTFM": quality checks, a crawler that never went deeper than the front page, and the most important lesson of the project so far
 
 ---
