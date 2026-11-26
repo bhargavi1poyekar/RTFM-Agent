@@ -15,6 +15,17 @@ import time
 from config.logging import logger
 
 
+def make_chunk_id(source_url: str, content: str) -> str:
+    """
+    Deterministic chunk ID from the page URL and the chunk's full text.
+
+    Hashing the whole text (not a prefix) matters: chunks from the same
+    page often start the same way, and colliding IDs make the vector
+    store silently overwrite one chunk with another.
+    """
+    return hashlib.md5(f"{source_url}\n{content}".encode("utf-8")).hexdigest()
+
+
 @dataclass
 class DocumentChunk:
     """
@@ -41,9 +52,7 @@ class DocumentChunk:
     
     def generate_id(self, content: str) -> str:
         """Generate a unique ID based on content."""
-        return hashlib.md5(
-            f"{self.source_url}:{self.section}:{content[:100]}".encode()
-        ).hexdigest()
+        return make_chunk_id(self.source_url, content)
 
 
 class BaseScraper(ABC):

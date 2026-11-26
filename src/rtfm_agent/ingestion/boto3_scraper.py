@@ -5,13 +5,12 @@ Boto3 documentation scraper implementation.
 from typing import List, Dict, Any, Optional
 from urllib.parse import urljoin, urlparse
 import re
-import hashlib
 
 import requests
 from bs4 import BeautifulSoup
 from html2text import HTML2Text
 
-from src.rtfm_agent.ingestion.base import BaseScraper, DocumentChunk
+from src.rtfm_agent.ingestion.base import BaseScraper, DocumentChunk, make_chunk_id
 from config.logging import logger
 from config.settings import settings
 
@@ -759,13 +758,12 @@ class Boto3Scraper(BaseScraper):
         code_blocks: List[str]
     ) -> DocumentChunk:
         """Create a DocumentChunk from content."""
-        chunk_id = hashlib.md5(
-            f"{metadata.get('url')}:{section}:{content[:100]}".encode()
-        ).hexdigest()
-        
+        content = content.strip()
+        chunk_id = make_chunk_id(metadata.get("url", ""), content)
+
         return DocumentChunk(
             chunk_id=chunk_id,
-            content=content.strip(),
+            content=content,
             source_url=metadata.get("url", ""),
             title=metadata.get("title", ""),
             section=section,
@@ -786,9 +784,7 @@ class Boto3Scraper(BaseScraper):
         
         for i in range(0, len(content), chunk_size - overlap):
             chunk_content = content[i:i + chunk_size]
-            chunk_id = hashlib.md5(
-                f"{metadata.get('url')}:{i}:{chunk_content[:100]}".encode()
-            ).hexdigest()
+            chunk_id = make_chunk_id(metadata.get("url", ""), chunk_content)
             
             chunks.append(DocumentChunk(
                 chunk_id=chunk_id,
