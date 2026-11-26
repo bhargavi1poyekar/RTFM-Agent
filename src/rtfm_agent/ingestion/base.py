@@ -15,6 +15,17 @@ import time
 from config.logging import logger
 
 
+def make_chunk_id(source_url: str, content: str) -> str:
+    """
+    Deterministic chunk ID from the page URL and the chunk's full text.
+
+    Hashing the whole text (not a prefix) matters: chunks from the same
+    page often start the same way, and colliding IDs make the vector
+    store silently overwrite one chunk with another.
+    """
+    return hashlib.md5(f"{source_url}\n{content}".encode("utf-8")).hexdigest()
+
+
 @dataclass
 class DocumentChunk:
     """
@@ -41,9 +52,7 @@ class DocumentChunk:
     
     def generate_id(self, content: str) -> str:
         """Generate a unique ID based on content."""
-        return hashlib.md5(
-            f"{self.source_url}:{self.section}:{content[:100]}".encode()
-        ).hexdigest()
+        return make_chunk_id(self.source_url, content)
 
 
 class BaseScraper(ABC):
@@ -82,7 +91,14 @@ class BaseScraper(ABC):
         if elapsed < self.min_request_interval:
             time.sleep(self.min_request_interval - elapsed)
         self.last_request_time = time.time()
-        
+
+    def prioritize_urls(self, urls: List[str]) -> List[str]:
+        """
+        Order the crawl queue. Default keeps discovery order (plain BFS);
+        subclasses override this to visit the most valuable pages first.
+        """
+        return urls
+
     @abstractmethod
     def get_page_content(self, url: str) -> Dict[str, Any]:
         """
@@ -165,6 +181,9 @@ class BaseScraper(ABC):
         logger.info(f"Max pages: {max_pages}")
         
         urls_to_visit = self.prioritize_urls(list(seeds))
+        # Set mirror of the queue: O(1) "already queued?" checks. Pages can
+        # have 1,000+ links, so scanning the list each time gets slow.
+        queued = set(urls_to_visit)
         pages_processed = 0
         
         while urls_to_visit and pages_processed < max_pages:
@@ -190,8 +209,9 @@ class BaseScraper(ABC):
                 # Get links
                 new_links = self.get_links(current_url)
                 for link in new_links:
-                    if link not in self.visited_urls and link not in urls_to_visit:
+                    if link not in self.visited_urls and link not in queued:
                         urls_to_visit.append(link)
+                        queued.add(link)
 
                 if pages_processed % 10 == 0:
                     urls_to_visit = self.prioritize_urls(urls_to_visit)
@@ -213,7 +233,7 @@ class BaseScraper(ABC):
                 self.visited_urls.add(current_url)
                 
                 logger.info(
-                    f"  → {len(page_chunks)} chunks | "
+                    f"  -> {len(page_chunks)} chunks | "
                     f"{len(urls_to_visit)} URLs queued"
                 )
                 
