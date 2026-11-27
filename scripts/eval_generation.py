@@ -44,12 +44,16 @@ def score(answer, expected_pages):
 
     cited_pages = {page_key(s.url) for s in answer.sources if s.cited}
     verdicts = Counter(c.verdict for c in answer.iam_check)
+    all_grounded = bool(answer.iam_check) and set(verdicts) == {"grounded"}
+    cites_right = bool(cited_pages & set(expected_pages))
     return {
         "found": answer.found,
         "code_parses": code_ok,
         "right_method": right_method,
         "has_policy": answer.iam_policy is not None,
-        "cites_right_page": bool(cited_pages & set(expected_pages)),
+        "policy_grounded": all_grounded,
+        "cites_right_page": cites_right,
+        "fully_good": right_method and cites_right and all_grounded,
         "cites_everything": len(answer.sources) > 1 and len(cited_pages) == len(answer.sources),
         "verdicts": dict(verdicts),
         "seconds": answer.seconds,
@@ -63,10 +67,14 @@ def main() -> None:
     parser.add_argument("--split", default="dev", choices=["dev", "test", "all"])
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--out", default=None, help="save every answer + score as JSON")
+    parser.add_argument("--persist-dir", default=None,
+                        help="index folder (default: CHROMADB_PERSIST_DIR)")
+    parser.add_argument("--top-k", type=int, default=None)
     args = parser.parse_args()
 
     cfg = settings.model_copy(update={"LLM_MODEL": args.model})
-    agent = RTFMAgent(Retriever(VectorStore(Embedder())), get_llm(cfg))
+    store = VectorStore(Embedder(), persist_dir=args.persist_dir)
+    agent = RTFMAgent(Retriever(store), get_llm(cfg))
     questions = load_questions(args.questions, args.split)[: args.limit]
 
     agent.llm.complete("Reply with OK.", "OK?")  # load the model before timing
@@ -74,7 +82,7 @@ def main() -> None:
 
     rows = []
     for i, q in enumerate(questions, 1):
-        answer = agent.ask(q.q)
+        answer = agent.ask(q.q, top_k=args.top_k)
         s = score(answer, q.pages)
         rows.append({"id": q.id, "q": q.q, "expected": q.pages, "score": s,
                      "answer": answer.answer, "warnings": answer.warnings,
@@ -89,8 +97,8 @@ def main() -> None:
     verdicts = sum((Counter(r["score"]["verdicts"]) for r in rows), Counter())
     secs = sorted(r["score"]["seconds"] for r in rows)
     print(f"\n{agent.llm.name} on {n} {args.split} questions")
-    for key in ("found", "code_parses", "right_method", "has_policy",
-                "cites_right_page", "cites_everything"):
+    for key in ("found", "code_parses", "right_method", "has_policy", "policy_grounded",
+                "cites_right_page", "cites_everything", "fully_good"):
         print(f"  {key:<18} {pct(key):>6.0%}")
     print(f"  IAM actions        {dict(verdicts)}")
     print(f"  seconds            median {secs[n // 2]:.0f}, max {secs[-1]:.0f}")

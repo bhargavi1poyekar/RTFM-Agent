@@ -87,6 +87,16 @@ def test_rrf_rewards_items_ranked_well_in_both_lists() -> None:
     assert fused[0][1] == pytest.approx(1 / 62 + 1 / 61)
 
 
+def test_rrf_weight_lets_second_list_only_break_ties() -> None:
+    vector, keyword = ["a", "b"], ["b", "a"]
+    # equal weights: a and b tie; down-weighted keywords: vector order wins
+    equal = dict(reciprocal_rank_fusion([vector, keyword]))
+    assert equal["a"] == pytest.approx(equal["b"])
+    weighted = reciprocal_rank_fusion([vector, keyword], weights=[1.0, 0.1])
+    assert [doc for doc, _ in weighted] == ["a", "b"]
+    assert weighted[0][1] == pytest.approx(1 / 61 + 0.1 / 62)
+
+
 # ------------------------------------------------------------------- retriever
 
 @pytest.mark.parametrize("mode", ["vector", "bm25", "hybrid"])

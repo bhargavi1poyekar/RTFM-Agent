@@ -37,10 +37,12 @@ def main() -> None:
     parser.add_argument("--config", choices=list(CONFIGS), action="append",
                         help="only run these configs (repeatable)")
     parser.add_argument("--show-misses", action="store_true")
+    parser.add_argument("--persist-dir", default=None,
+                        help="index folder (default: CHROMADB_PERSIST_DIR)")
     args = parser.parse_args()
 
     questions = load_questions(args.questions, args.split)
-    store = VectorStore(Embedder())
+    store = VectorStore(Embedder(), persist_dir=args.persist_dir)
     print(f"{len(questions)} {args.split} questions | {store.count()} chunks indexed\n")
     print(f"{'config':<22} {'Recall@1':>9} {f'Recall@{args.k}':>9} {'MRR':>6}")
 

@@ -101,12 +101,16 @@ class BM25Index:
         return sorted(scores.items(), key=lambda x: -x[1])[:top_k]
 
 
-def reciprocal_rank_fusion(rankings: List[List[str]], k: int = 60) -> List[tuple]:
-    """Merge ranked ID lists: score(id) = sum 1/(k + rank). Returns [(id, score)]."""
+def reciprocal_rank_fusion(
+    rankings: List[List[str]], k: int = 60, weights: Optional[List[float]] = None
+) -> List[tuple]:
+    """Merge ranked ID lists: score(id) = sum w / (k + rank). Returns [(id, score)].
+    A weight below 1 lets a list break ties without overruling the others."""
+    weights = weights or [1.0] * len(rankings)
     scores: Dict[str, float] = defaultdict(float)
-    for ranking in rankings:
+    for ranking, w in zip(rankings, weights):
         for rank, doc_id in enumerate(ranking, start=1):
-            scores[doc_id] += 1.0 / (k + rank)
+            scores[doc_id] += w / (k + rank)
     return sorted(scores.items(), key=lambda x: -x[1])
 
 
@@ -143,12 +147,16 @@ class Retriever:
         one_per_page: bool = True,
         # Off by default: no gain on the dev set (MRR 0.796 -> 0.794)
         service_filter: bool = False,
+        rrf_k: int = 60,
+        bm25_weight: float = 1.0,
     ):
         self.store = store
         self.mode = mode
         self.candidates = candidates
         self.one_per_page = one_per_page
         self.service_filter = service_filter
+        self.rrf_k = rrf_k
+        self.bm25_weight = bm25_weight
         self._bm25: Optional[BM25Index] = None
 
     def _load_corpus(self) -> None:
@@ -206,7 +214,8 @@ class Retriever:
             kw = self._keyword(query, n, where)
             by_id = {c.chunk_id: c for c in kw + vec}
             fused = reciprocal_rank_fusion(
-                [[c.chunk_id for c in vec], [c.chunk_id for c in kw]]
+                [[c.chunk_id for c in vec], [c.chunk_id for c in kw]],
+                k=self.rrf_k, weights=[1.0, self.bm25_weight],
             )
             ranked = [
                 RetrievedChunk(cid, by_id[cid].text, by_id[cid].metadata, score)

@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import time
+from typing import Optional
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -46,15 +47,16 @@ def report_truncation(embedder: Embedder, chunks) -> None:
     )
 
 
-def build_index(chunks_path: str, rebuild: bool) -> VectorStore:
+def build_index(chunks_path: str, rebuild: bool, persist_dir: Optional[str] = None,
+                min_tokens: Optional[int] = None, max_tokens: Optional[int] = None) -> VectorStore:
     raw = load_chunks(chunks_path)
-    valid = ChunkValidator().filter_valid(raw)
+    valid = ChunkValidator(min_length=min_tokens, max_length=max_tokens).filter_valid(raw)
     logger.info(f"Loaded {len(raw)} chunks, {len(valid)} passed validation")
 
     embedder = Embedder()
     report_truncation(embedder, valid)
 
-    store = VectorStore(embedder)
+    store = VectorStore(embedder, persist_dir=persist_dir)
     if rebuild:
         logger.info("Rebuilding: deleting existing collection")
         store.reset()
@@ -81,13 +83,20 @@ def main() -> None:
     parser.add_argument("--rebuild", action="store_true", help="drop the collection first")
     parser.add_argument("--search", action="append", default=[],
                         help="only run this query against the existing index (repeatable)")
+    parser.add_argument("--persist-dir", default=None,
+                        help="index folder (default: CHROMADB_PERSIST_DIR), e.g. for experiments")
+    parser.add_argument("--min-tokens", type=int, default=None,
+                        help="validator minimum (default: CHUNK_MIN_TOKENS)")
+    parser.add_argument("--max-tokens", type=int, default=None,
+                        help="validator maximum (default: CHUNK_MAX_TOKENS)")
     args = parser.parse_args()
 
     if args.search:
-        store = VectorStore(Embedder())
+        store = VectorStore(Embedder(), persist_dir=args.persist_dir)
         logger.info(f"Collection holds {store.count()} chunks")
     else:
-        store = build_index(args.chunks, args.rebuild)
+        store = build_index(args.chunks, args.rebuild, args.persist_dir,
+                            args.min_tokens, args.max_tokens)
 
     for query in args.search:
         show_search(store, query)
