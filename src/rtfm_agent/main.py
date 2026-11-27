@@ -66,6 +66,7 @@ async def root():
         "health": "/health",
     }
 
-# Import and include routers
-# from src.rtfm_agent.api import query_router
-# app.include_router(query_router, prefix=settings.API_PREFIX)
+# Routers
+from src.rtfm_agent.api.query import router as query_router  # noqa: E402
+
+app.include_router(query_router, prefix=settings.API_PREFIX)

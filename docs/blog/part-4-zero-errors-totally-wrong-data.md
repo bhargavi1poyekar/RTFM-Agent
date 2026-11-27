@@ -138,4 +138,4 @@ See you in Part 5!
 2. How to Scrape 2,300 Docs Pages Without Getting Kicked Out
 3. Chunky Business: I Was Silently Throwing Away Half My Data
 4. **Zero Errors, Totally Wrong Data** ← you are here
-5. *Coming soon: turning words into numbers (embeddings)*
+5. Embeddings and Vector Search, and Why I Stopped Guessing Token Counts

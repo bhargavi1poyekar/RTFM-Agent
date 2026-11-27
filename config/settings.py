@@ -25,7 +25,12 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "llama3"
     LLM_TEMPERATURE: float = 0.3
     LLM_MAX_TOKENS: int = 2000
-    
+    OLLAMA_HOST: str = "http://localhost:11434"
+    # Ollama silently drops the *start* of a prompt (our rules) if it's longer
+    # than the context window. Prompts measure ~900-1,300 tokens at top_k=5;
+    # 4096 leaves room for top_k=10 plus the answer.
+    OLLAMA_NUM_CTX: int = 4096
+
     # OpenAI (if using)
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_MODEL: str = "gpt-4o-mini"
@@ -49,13 +54,15 @@ class Settings(BaseSettings):
     RETRIEVAL_SCORE_THRESHOLD: float = 0.7
     
     # Chunking (sizes in tokens, counted with the embedding model's tokenizer)
-    # all-MiniLM-L6-v2 reads 256 tokens per input, 2 of which are [CLS] and
-    # [SEP], leaving 254. Each chunk is embedded with a breadcrumb like
-    # "s3 > client > put_object" (longest seen: 23 tokens), so chunk text
-    # gets 254 - 24 = 230. Characters are not used: chars/token ranges from
-    # ~3.7 (prose) down to ~1.3 (EC2 instance-type lists).
-    CHUNK_MAX_TOKENS: int = 230    # max tokens per chunk
-    CHUNK_MIN_TOKENS: int = 40     # smaller chunks are dropped as fragments
+    # all-MiniLM-L6-v2 truncates at 256 tokens but was *trained* on 128, and
+    # mean pooling dilutes one key sentence across a long chunk. So the
+    # budget is 128: minus [CLS]/[SEP] (2) and the breadcrumb such as
+    # "s3 > client > put_object" (longest seen: 23 tokens + blank line = 24)
+    # leaves 102 for chunk text. Measured on eval/retrieval_questions.json
+    # (dev): Recall@1 64% -> 78%, MRR 0.789 -> 0.837 vs the old 230 budget.
+    # Characters are not used: chars/token ranges from ~3.7 down to ~1.3.
+    CHUNK_MAX_TOKENS: int = 102    # max tokens per chunk
+    CHUNK_MIN_TOKENS: int = 20     # smaller chunks are dropped as fragments
     CHUNK_OVERLAP: int = 100
     
     # Memory

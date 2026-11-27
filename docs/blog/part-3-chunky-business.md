@@ -4,6 +4,8 @@
 
 ### Part 3 of "Building RTFM": cutting documents into pieces, and why you should measure instead of guess
 
+> **📝 Update:** A reader tested the 700-character limit below with the model's own tokenizer and showed it isn't safe for code-heavy text (700 characters came out at 291 tokens). They were right. The chunker now counts tokens directly instead of converting from characters. The full story is in [Part 5](#). Thank you! 🙏
+
 ---
 
 Quick recap: in [Part 2](#), I built a crawler that turns AWS documentation pages into clean text.
@@ -109,4 +111,4 @@ But I'd been feeling pretty confident about this whole data pipeline. No errors,
 2. How to Scrape 2,300 Docs Pages Without Getting Kicked Out
 3. **Chunky Business: I Was Silently Throwing Away Half My Data** ← you are here
 4. Zero Errors, Totally Wrong Data
-5. *Coming soon: turning words into numbers (embeddings)*
+5. Embeddings and Vector Search, and Why I Stopped Guessing Token Counts

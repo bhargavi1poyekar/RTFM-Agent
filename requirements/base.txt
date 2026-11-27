@@ -9,6 +9,7 @@ pydantic-settings==2.4.0
 openai==1.43.0
 anthropic==0.28.0
 ollama==0.3.0
+boto3==1.44.12  # coverage test: expected operations per service (botocore)
 sentence-transformers==3.0.1
 transformers==4.44.2
 torch==2.4.1  # 2.4.0 Windows wheel is missing libomp140.x86_64.dll (fbgemm.dll load error)
