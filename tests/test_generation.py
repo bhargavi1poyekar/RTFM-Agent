@@ -169,6 +169,29 @@ def test_boto3_helpers_map_to_real_actions_not_their_own_name() -> None:
                         "sqs:SendMessage": "grounded"}
 
 
+def test_action_spelling_follows_iam_rules() -> None:
+    # Seen from llama3.2:3b / llama3.1:8b: snake_case and missing prefixes
+    chunks = [retrieved("ec2/client/describe_instances", "Describes instances."),
+              retrieved("ec2/client/terminate_instances", "Terminates instances.")]
+    policy = {"Statement": [{"Action": [
+        "ec2:describe_instances",            # underscores: not a valid IAM action
+        "ec2:terminateInstances",            # IAM ignores case: fine
+        "put-bucket-lifecycle-configuration",  # no service prefix
+    ]}]}
+    verdicts = {c.action: c.verdict for c in check_policy(policy, chunks)}
+    assert verdicts == {"ec2:describe_instances": "not_found",
+                        "ec2:terminateInstances": "grounded",
+                        "put-bucket-lifecycle-configuration": "not_found"}
+
+
+def test_json_that_is_not_a_policy_is_rejected() -> None:
+    # e.g. a sample API response pasted where the policy should be
+    raw = 'See [1].\n```json\n{"InstanceStatuses": [{"InstanceId": "i-1"}]}\n```'
+    parsed = parse_answer(raw, n_sources=1)
+    assert parsed.policy is None
+    assert any("not an IAM policy" in w for w in parsed.warnings)
+
+
 def test_grounded_evidence_points_to_the_page() -> None:
     chunks = [retrieved("ec2/client/run_instances", "Launches instances.")]
     [check] = check_policy({"Statement": [{"Action": "ec2:RunInstances"}]}, chunks)

@@ -22,13 +22,15 @@ class LLM(Protocol):
 
 
 class OllamaLLM:
-    def __init__(self, model: str, host: str, temperature: float, max_tokens: int):
+    def __init__(self, model: str, host: str, temperature: float, max_tokens: int,
+                 num_ctx: int = 4096):
         from ollama import Client
 
         self.name = f"ollama/{model}"
         self._client = Client(host=host)
         self._model = model
-        self._options = {"temperature": temperature, "num_predict": max_tokens}
+        self._options = {"temperature": temperature, "num_predict": max_tokens,
+                         "num_ctx": num_ctx}
 
     def complete(self, system: str, user: str) -> str:
         try:
@@ -99,7 +101,7 @@ def get_llm(cfg: Optional[Settings] = None) -> LLM:
     common = dict(temperature=cfg.LLM_TEMPERATURE, max_tokens=cfg.LLM_MAX_TOKENS)
 
     if cfg.LLM_PROVIDER == "ollama":
-        return OllamaLLM(cfg.LLM_MODEL, cfg.OLLAMA_HOST, **common)
+        return OllamaLLM(cfg.LLM_MODEL, cfg.OLLAMA_HOST, num_ctx=cfg.OLLAMA_NUM_CTX, **common)
     if cfg.LLM_PROVIDER == "openai":
         if not cfg.OPENAI_API_KEY:
             raise LLMError("LLM_PROVIDER=openai but OPENAI_API_KEY is not set")

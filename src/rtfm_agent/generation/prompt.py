@@ -82,9 +82,15 @@ def parse_answer(raw: str, n_sources: int) -> ParsedAnswer:
     policy = _JSON_BLOCK.search(text)
     if policy:
         try:
-            out.policy = json.loads(policy.group(1))
+            data = json.loads(policy.group(1))
         except json.JSONDecodeError as e:
             out.warnings.append(f"IAM policy is not valid JSON: {e.msg}.")
+        else:
+            # Small models sometimes put a sample API response here instead
+            if isinstance(data, dict) and "Statement" in data:
+                out.policy = data
+            else:
+                out.warnings.append("The JSON block is not an IAM policy (no Statement).")
     else:
         out.warnings.append("No IAM policy in the answer.")
 

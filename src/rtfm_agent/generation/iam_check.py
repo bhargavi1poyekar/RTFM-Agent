@@ -125,8 +125,10 @@ def check_policy(policy: Dict, chunks: List, catalog: Optional[DocsCatalog] = No
         if "*" in action:
             results.append(ActionCheck(action, "too_broad", None))
             continue
+        # IAM ignores case, but not underscores: "ec2:describe_instances"
+        # is not a valid action, so only page names get underscores removed.
         svc, _, name = action.partition(":")
-        key = f"{svc.lower()}:{norm(name)}"
+        key = f"{svc.lower()}:{name.lower()}"
         if key in support:
             results.append(ActionCheck(action, "grounded", support[key]))
         elif catalog is not None and key in catalog.known:

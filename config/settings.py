@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     LLM_TEMPERATURE: float = 0.3
     LLM_MAX_TOKENS: int = 2000
     OLLAMA_HOST: str = "http://localhost:11434"
+    # Ollama silently drops the *start* of a prompt (our rules) if it's longer
+    # than the context window. Prompts measure ~900-1,300 tokens at top_k=5;
+    # 4096 leaves room for top_k=10 plus the answer.
+    OLLAMA_NUM_CTX: int = 4096
 
     # OpenAI (if using)
     OPENAI_API_KEY: Optional[str] = None
