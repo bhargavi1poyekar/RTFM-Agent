@@ -25,7 +25,8 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "llama3"
     LLM_TEMPERATURE: float = 0.3
     LLM_MAX_TOKENS: int = 2000
-    
+    OLLAMA_HOST: str = "http://localhost:11434"
+
     # OpenAI (if using)
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_MODEL: str = "gpt-4o-mini"
