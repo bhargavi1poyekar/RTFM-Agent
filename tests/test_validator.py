@@ -9,7 +9,8 @@ from config.settings import settings
 from src.rtfm_agent.ingestion.base import DocumentChunk
 from src.rtfm_agent.ingestion.validator import ChunkValidator, ValidationReport
 
-GOOD_TEXT = "The put_object method uploads a file to an S3 bucket. " * 5  # ~270 chars
+GOOD_TEXT = "The put_object method uploads a file to an S3 bucket. " * 5  # ~80 tokens
+OTHER_TEXT = "The get_object method downloads a file from an S3 bucket. " * 5  # ~70 tokens
 
 
 def make_chunk(content: str = GOOD_TEXT, **overrides) -> DocumentChunk:
@@ -89,7 +90,7 @@ def test_shared_prefix_with_different_content_is_not_duplicate() -> None:
 
 
 def test_report_counts_and_pass_rate() -> None:
-    chunks = [make_chunk(), make_chunk(content="short"), make_chunk(content=GOOD_TEXT[::-1])]
+    chunks = [make_chunk(), make_chunk(content="short"), make_chunk(content=OTHER_TEXT)]
 
     report = ChunkValidator().validate(chunks)
 
@@ -112,7 +113,7 @@ def test_filter_valid_agrees_with_validate() -> None:
         make_chunk(),  # duplicate
         make_chunk(content="short"),
         make_chunk(content=GOOD_TEXT + " different tail"),  # shared prefix only
-        make_chunk(content=GOOD_TEXT[::-1]),
+        make_chunk(content=OTHER_TEXT),
     ]
     v = ChunkValidator()
 
