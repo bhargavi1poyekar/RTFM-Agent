@@ -3,13 +3,10 @@ Tests for chunk IDs, the context line / metadata built for each chunk, and
 the ChromaDB VectorStore. A tiny bag-of-words FakeEmbedder replaces the real
 model so these run offline in about a second.
 """
-import hashlib
-import math
-import re
-from typing import List
 
 import pytest
 
+from tests.fakes import FakeEmbedder
 from src.rtfm_agent.embedding.vector_store import (
     VectorStore,
     chunk_metadata,
@@ -21,29 +18,6 @@ from src.rtfm_agent.ingestion.base import DocumentChunk, make_chunk_id
 from src.rtfm_agent.ingestion.boto3_scraper import Boto3Scraper
 
 BASE = "https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services"
-
-
-class FakeEmbedder:
-    """Hashes each word into one of 64 buckets; normalised like the real one."""
-
-    dims = 64
-
-    def __init__(self):
-        self.calls = 0
-
-    def _vec(self, text: str) -> List[float]:
-        v = [0.0] * self.dims
-        for word in re.findall(r"[a-z0-9]+", text.lower()):
-            v[int(hashlib.md5(word.encode()).hexdigest(), 16) % self.dims] += 1.0
-        norm = math.sqrt(sum(x * x for x in v)) or 1.0
-        return [x / norm for x in v]
-
-    def embed_documents(self, texts, show_progress=False):
-        self.calls += 1
-        return [self._vec(t) for t in texts]
-
-    def embed_query(self, text):
-        return self._vec(text)
 
 
 def make_chunk(content: str, url: str = f"{BASE}/s3/client/put_object.html",
